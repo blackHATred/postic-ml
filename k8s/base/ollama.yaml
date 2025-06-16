@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: postic-ml
+  labels:
+    app: ollama
+    component: llm-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+      - name: ollama
+        image: ollama/ollama:0.6.8
+        ports:
+        - containerPort: 11434
+          name: ollama
+        env:
+        - name: OLLAMA_HOST
+          value: "0.0.0.0"
+        - name: OLLAMA_PORT
+          value: "11434"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1"
+            # GPU ресурсы для продакшена (будут переопределены в overlays)
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: ollama-models
+          mountPath: /root/.ollama
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - |
+                sleep 10
+                ollama pull gemma3:4b
+                ollama pull bge-m3:567m
+        livenessProbe:
+          httpGet:
+            path: /api/version
+            port: 11434
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/version
+            port: 11434
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: ollama-models
+        persistentVolumeClaim:
+          claimName: ollama-models-pvc
+      nodeSelector:
+        accelerator: nvidia-tesla-gpu
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: postic-ml
+  labels:
+    app: ollama
+spec:
+  selector:
+    app: ollama
+  ports:
+  - port: 11434
+    targetPort: 11434
+    name: ollama
+  type: ClusterIP

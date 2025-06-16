@@ -1,31 +1,71 @@
 ARG PYTHON="3.12.10"
 
-# tmp stage
-FROM python:${PYTHON}-slim AS python_image
-
-# tmp stage
-FROM python_image AS builder
+# Build stage
+FROM python:${PYTHON}-slim AS builder
 
 WORKDIR /app
 
+# Install build dependencies and clean up in one layer
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Copy only requirements first for better caching
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/app/wheels \
+
+# Create wheels with cache mount and install in one step
+RUN --mount=type=cache,target=/root/.cache/pip \
     pip wheel --no-cache-dir --no-deps \
     --wheel-dir /app/wheels -r requirements.txt
 
-# final stage
-FROM python_image
+# Final stage
+FROM python:${PYTHON}-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install runtime dependencies in one layer
+RUN apt-get update && apt-get install -y \
+    curl \
+    netcat-traditional \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /app
 
-COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache /wheels/*
+# Create non-root user early
+RUN useradd --create-home --shell /bin/bash --uid 1000 app
 
-COPY synt_ticket_model_weights.pth .
-COPY main.py .
-COPY gcs.py .
-ENV MAX_TOKENS=4096
+# Install Python packages from wheels (more efficient than force-reinstall)
+COPY --from=builder /app/wheels /wheels
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps /wheels/* \
+    && rm -rf /wheels
+
+# Copy model weights first (changes rarely, better caching)
+COPY --chown=app:app synt_ticket_model_weights.pth .
+
+# Copy application code in fewer layers
+COPY --chown=app:app api/ ./api/
+COPY --chown=app:app config/ ./config/
+COPY --chown=app:app core/ ./core/
+COPY --chown=app:app models/ ./models/
+COPY --chown=app:app services/ ./services/
+COPY --chown=app:app utils/ ./utils/
+COPY --chown=app:app main.py .
+
+# Switch to non-root user
+USER app
+
+# Health check with better error handling
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8000/docs || exit 1
+
+EXPOSE 8000
+
 CMD ["python", "main.py"]
