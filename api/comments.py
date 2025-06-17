@@ -1,40 +1,39 @@
 """API эндпоинты для анализа комментариев."""
 import torch
 import asyncio
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 from config.settings import STR_NO_ANSWER, STR_PASS, TEMP
 from services.llm_service import ollama_chat_completion
+from models.requests import SentimentRequest, TicketRequest, SummaryRequest, FixTextRequest, AnswerCommentRequest
+from models.responses import SentimentResponse, TicketResponse, SummaryResponse, FixTextResponse, AnswerCommentResponse
 
 
-async def get_sentiment(request: Request, sentiment_model):
+async def get_sentiment(request: SentimentRequest, sentiment_model) -> SentimentResponse:
     """Анализ тональности комментария."""
     try:
-        payload = await request.json()
-        comment = payload["comment"]
+        comment = request.comment
         response = sentiment_model(comment)[0]
-        return response
+        return SentimentResponse(label=response['label'], score=response['score'])
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def get_ticket_synt(request: Request, seq_model, ticket_model):
+async def get_ticket_synt(request: TicketRequest, seq_model, ticket_model) -> TicketResponse:
     """Определение необходимости поддержки с помощью ML модели."""
     try:
-        payload = await request.json()
-        comment = payload["comment"]
+        comment = request.comment
         emb = seq_model.encode([comment], show_progress_bar=False)[0]
         pred = torch.argmax(ticket_model(torch.from_numpy(emb))).item()
-        return {"support_needed": bool(pred)}
+        return TicketResponse(support_needed=bool(pred))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def get_ticket_llm(request: Request):
+async def get_ticket_llm(request: TicketRequest) -> TicketResponse:
     """Определение необходимости поддержки с помощью LLM."""
     try:
-        payload = await request.json()
-        comment = payload["comment"]
+        comment = request.comment
         messages = [
             {
                 "role": "system",
@@ -44,20 +43,17 @@ async def get_ticket_llm(request: Request):
                 "content": f"Comment:\n{comment}"
             }
         ]
-        r = {"support_needed": False}
         response = await ollama_chat_completion(messages, temperature=TEMP)
-        if STR_PASS in response:
-            r["support_needed"] = True
-        return r
+        support_needed = STR_PASS in response
+        return TicketResponse(support_needed=support_needed)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def get_summary(request: Request):
+async def get_summary(request: SummaryRequest) -> SummaryResponse:
     """Суммаризация комментариев к посту."""
     try:
-        payload = await request.json()
-        comments = payload["comments"]
+        comments = request.comments
         messages = [
             {
                 "role": "system",
@@ -68,16 +64,15 @@ async def get_summary(request: Request):
             }
         ]
         response = await ollama_chat_completion(messages, temperature=TEMP)
-        return {"response": "### Краткое содержание комментариев:\n" + response}
+        return SummaryResponse(response="### Краткое содержание комментариев:\n" + response)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def fix_text(request: Request):
+async def fix_text(request: FixTextRequest) -> FixTextResponse:
     """Исправление орфографических и пунктуационных ошибок."""
     try:
-        payload = await request.json()
-        text = payload["text"]
+        text = request.text
         messages = [
             {
                 "role": "system",
@@ -94,17 +89,16 @@ async def fix_text(request: Request):
             }
         ]
         response = await ollama_chat_completion(messages, temperature=TEMP)
-        return {"response": response}
+        return FixTextResponse(response=response)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-async def answer_comment(request: Request):
+async def answer_comment(request: AnswerCommentRequest) -> AnswerCommentResponse:
     """Генерация ответа на комментарий."""
     try:
-        payload = await request.json()
-        comment = payload["comment"]
-        style = payload.get("style", "дружелюбном")
+        comment = request.comment
+        style = request.style
         messages = [
             {
                 "role": "system",
@@ -142,6 +136,6 @@ async def answer_comment(request: Request):
             r.pop('answer_1', None)
             r.pop('answer_2', None)
         
-        return r
+        return AnswerCommentResponse(**r)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

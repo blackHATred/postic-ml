@@ -9,10 +9,20 @@ from sentence_transformers import SentenceTransformer
 from config.settings import (
     QDRANT_HOST, QDRANT_PORT, 
     REDIS_HOST, REDIS_PORT,
-    REFERENCE_COUNT, DEFAULT_TIMEOUT, DOMAINS_BLACKLIST
+    REFERENCE_COUNT, DEFAULT_TIMEOUT, DOMAINS_BLACKLIST,
+    OLLAMA_PRELOAD_MODELS
 )
 from models.classifier import TwoLayerClassifier
 from services.duckduckgo_search import DuckDuckGoSearch
+
+
+async def preload_ollama_models():
+    """Предзагружает модели Ollama если включена соответствующая настройка."""
+    if OLLAMA_PRELOAD_MODELS:
+        from services.llm_service import preload_models
+        await preload_models()
+    else:
+        print("⏭️ Предзагрузка моделей Ollama отключена")
 
 
 def init_clients():
@@ -44,22 +54,48 @@ def init_clients():
 def init_models():
     """Инициализирует ML модели."""
     # Принудительно используем CPU, если установлена переменная окружения
-    force_cpu = os.getenv('FORCE_CPU', 'false').lower() == 'true'
+    force_cpu = os.getenv('FORCE_CPU', 'true').lower() == 'true'
     device = 'cpu' if force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
     
     print(f"Используемое устройство для моделей: {device}")
     
-    # Модель анализа тональности
-    sentiment_model = pipeline(
-        model="blanchefort/rubert-base-cased-sentiment",
-        device_map="cpu" if force_cpu else "auto"
-    )
+    # Пути к закэшированным моделям
+    models_cache_dir = "/app/models_cache"
+    sentiment_cache_dir = f"{models_cache_dir}/sentiment"
+    seq_cache_dir = f"{models_cache_dir}/sentence_transformer"
     
-    # Модель для векторного представления
-    seq_model = SentenceTransformer(
-        'sentence-transformers/distiluse-base-multilingual-cased-v1',
-        device=device
-    )
+    # Проверяем, существуют ли локальные модели
+    if os.path.exists(sentiment_cache_dir) and os.path.exists(seq_cache_dir):
+        print("Загружаем модели из локального кэша...")
+        
+        # Модель анализа тональности из кэша
+        sentiment_model = pipeline(
+            model="blanchefort/rubert-base-cased-sentiment",
+            device_map="cpu" if force_cpu else "auto",
+            model_kwargs={"cache_dir": sentiment_cache_dir, "local_files_only": True}
+        )
+        
+        # Модель для векторного представления из кэша
+        seq_model = SentenceTransformer(
+            'sentence-transformers/distiluse-base-multilingual-cased-v1',
+            device=device,
+            cache_folder=seq_cache_dir
+        )
+        print("✓ Модели загружены из локального кэша")
+    else:
+        print("Локальный кэш не найден, загружаем модели из интернета...")
+        
+        # Модель анализа тональности
+        sentiment_model = pipeline(
+            model="blanchefort/rubert-base-cased-sentiment",
+            device_map="cpu" if force_cpu else "auto"
+        )
+        
+        # Модель для векторного представления
+        seq_model = SentenceTransformer(
+            'sentence-transformers/distiluse-base-multilingual-cased-v1',
+            device=device
+        )
     
     # Модель классификации тикетов
     ticket_model = TwoLayerClassifier()

@@ -11,7 +11,7 @@ data:
   OLLAMA_EMBEDDING_MODEL: "bge-m3:567m"
   OLLAMA_EMBEDDING_MODEL_DIM: "1024"
   OLLAMA_TIMEOUT: "60"
-  NUM_CTX: "8192"
+  NUM_CTX: "4096"
   QDRANT_HOST: "qdrant-service"
   QDRANT_PORT: "6333"
   REDIS_HOST: "redis-service"

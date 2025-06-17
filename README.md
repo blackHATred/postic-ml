@@ -88,8 +88,6 @@ kubectl apply -k k8s/overlays/minikube/
 
 # Получение URL для доступа
 minikube service postic-ml-service -n postic-ml --url
-chmod +x cleanup-minikube.sh
-./cleanup-minikube.sh
 ```
 
 **Доступ к приложению:**
@@ -121,20 +119,22 @@ kubectl top pods -n postic-ml
 
 ### Base URL: `http://localhost:8000`
 
+> **📋 Полные примеры использования доступны в файле [API_EXAMPLES.md](API_EXAMPLES.md)**
+
 <details>
 <summary><strong>📝 Генерация контента</strong></summary>
 
-#### `GET /publication`
+#### `POST /publication`
 Генерирует пост для социальных сетей на основе поискового запроса
 
-**Request:**
+**Request Model: `PublicationRequest`**
 ```json
 {
   "query": "составь пост про здоровое питание"
 }
 ```
 
-**Response:**
+**Response Model: `PublicationResponse`**
 ```json
 {
   "text": "Решил поделиться своим опытом здорового питания...",
@@ -156,17 +156,17 @@ kubectl top pods -n postic-ml
 <details>
 <summary><strong>💬 Анализ комментариев</strong></summary>
 
-#### `GET /sentiment`
+#### `POST /sentiment` | `GET /sentiment?comment=...`
 Анализирует тональность комментария
 
-**Request:**
+**Request Model: `SentimentRequest`**
 ```json
 {
   "comment": "Отличный продукт, очень доволен!"
 }
 ```
 
-**Response:**
+**Response Model: `SentimentResponse`**
 ```json
 {
   "label": "POSITIVE",
@@ -174,10 +174,66 @@ kubectl top pods -n postic-ml
 }
 ```
 
-#### `GET /ans`
+#### `POST /ticket_synt` | `GET /ticket_synt?comment=...`
+Определяет необходимость создания тикета поддержки (ML модель)
+
+**Request Model: `TicketRequest`**
+```json
+{
+  "comment": "У меня не работает функция загрузки"
+}
+```
+
+**Response Model: `TicketResponse`**
+```json
+{
+  "support_needed": true
+}
+```
+
+#### `POST /ticket_llm` | `GET /ticket_llm?comment=...`
+Определяет необходимость создания тикета поддержки (LLM)
+
+**Request/Response:** аналогично `/ticket_synt`
+
+#### `POST /sum`
+Суммаризирует содержание комментариев к посту
+
+**Request Model: `SummaryRequest`**
+```json
+{
+  "comments": "Пользователь 1: Отлично!\nПользователь 2: Спасибо!"
+}
+```
+
+**Response Model: `SummaryResponse`**
+```json
+{
+  "response": "### Краткое содержание комментариев:\nПользователи положительно оценили контент"
+}
+```
+
+#### `POST /fix`
+Исправляет орфографические и пунктуационные ошибки в тексте
+
+**Request Model: `FixTextRequest`**
+```json
+{
+  "text": "Превет! Как дила?"
+}
+```
+
+**Response Model: `FixTextResponse`**
+```json
+{
+  "response": "Привет! Как дела?"
+}
+```
+
+#### `POST /ans`
 Генерирует ответы на комментарии с определением типа реакции
 
-**Request:**
+**Request Model: `AnswerCommentRequest`**
 ```json
 {
   "comment": "Как подключить наушники к телефону?",
@@ -185,7 +241,7 @@ kubectl top pods -n postic-ml
 }
 ```
 
-**Response:**
+**Response Model: `AnswerCommentResponse`**
 ```json
 {
   "no_answer": false,
@@ -199,6 +255,30 @@ kubectl top pods -n postic-ml
 **Специальные случаи:**
 - `no_answer: true` - спам/оскорбления (не отвечать)
 - `support_needed: true` - требуется техподдержка
+
+</details>
+
+<details>
+<summary><strong>⚙️ Служебные эндпоинты</strong></summary>
+
+#### `GET /health`
+Проверка работоспособности сервиса
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "message": "Сервис работает"
+}
+```
+
+#### `GET /docs`
+Интерактивная документация Swagger UI
+
+#### `GET /redoc`
+Альтернативная документация ReDoc
+
+</details>
 
 </details>
 
@@ -353,6 +433,11 @@ postic-ml/
 ├── 📁 core/                  # Инициализация
 │   └── init.py              # Подключение сервисов
 ├── 📁 models/                # Модели данных
+│   ├── __init__.py          # Экспорт моделей
+│   ├── requests.py          # Pydantic модели запросов
+│   ├── responses.py         # Pydantic модели ответов
+│   ├── chunk.py             # Модель чанка
+│   └── classifier.py        # ML классификатор
 │   ├── chunk.py             # Текстовые блоки
 │   └── classifier.py        # ML классификаторы
 ├── 📁 services/              # Бизнес-логика
@@ -376,6 +461,8 @@ postic-ml/
 | **Search** | DuckDuckGo | Веб-поиск без ограничений |
 | **ML Models** | PyTorch, Transformers | Классификация и эмбеддинги |
 | **HTTP Client** | httpx | Асинхронные HTTP запросы |
+| **Data Models** | Pydantic | Валидация и сериализация данных |
+| **Type Hints** | Python 3.12+ | Статическая типизация |
 
 ### Потоки данных
 

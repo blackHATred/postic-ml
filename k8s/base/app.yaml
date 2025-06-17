@@ -8,6 +8,8 @@ metadata:
     component: api-server
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # Гарантирует, что старый под удаляется перед созданием нового
   selector:
     matchLabels:
       app: postic-ml-app
@@ -20,7 +22,7 @@ spec:
       - name: ghcr-login-secret
       containers:
       - name: postic-ml-app
-        image: blackhatred/postic-ml:k8s-latest
+        image: ghcr.io/blackhatred/postic-ml:latest
         ports:
         - containerPort: 8000
           name: http

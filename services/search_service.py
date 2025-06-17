@@ -15,6 +15,7 @@ from config.settings import (
 )
 from services.embedding_service import get_vector
 from utils.text_processing import to_chunks, combine_results
+from utils.timing import timer
 
 
 async def index_one(hash_name, client, prev_last_id_chunk_count, url, chunks):
@@ -93,7 +94,9 @@ async def index(client: QdrantClient, searcher, query: str):
             for url, chunks in url_md_dict.items()
         ))
         
-        return hash_name, chunk_count_pred
+        # Если chunk_count_pred остался None, используем общий chunk_count
+        final_chunk_count = chunk_count_pred if chunk_count_pred is not None else chunk_count
+        return hash_name, final_chunk_count
     except Exception as e:
         print(f"Исключение во время индексации: {e}")
         return None, None

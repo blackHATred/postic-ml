@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Postic ML - Потоковая генерация</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus, textarea:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+        
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            margin: 20px 0;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            background: #f8f9fa;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: 'Georgia', serif;
+            line-height: 1.6;
+        }
+        
+        .typing {
+            display: inline-block;
+            background: #007bff;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+            animation: blink 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+        
+        .logs {
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        
+        .log-entry {
+            padding: 8px 12px;
+            border-bottom: 1px solid #dee2e6;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        
+        .log-status { color: #007bff; }
+        .log-search { color: #28a745; }
+        .log-warning { color: #ffc107; }
+        .log-error { color: #dc3545; }
+        .log-generation { color: #6f42c1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Postic ML - Потоковая генерация</h1>
+        
+        <form id="queryForm">
+            <div class="input-group">
+                <label for="apiUrl">API URL:</label>
+                <input type="text" id="apiUrl" value="http://localhost:8000/publication/stream" />
+            </div>
+            
+            <div class="input-group">
+                <label for="query">Ваш запрос:</label>
+                <textarea id="query" placeholder="Например: Расскажи про новые технологии ИИ в 2024 году"></textarea>
+            </div>
+            
+            <button type="submit" id="generateBtn">Генерировать пост</button>
+            <button type="button" id="stopBtn" disabled>Остановить</button>
+        </form>
+        
+        <div id="status"></div>
+        
+        <div class="result" id="result" style="display: none;">
+            <div id="content"></div>
+        </div>
+        
+        <details>
+            <summary><strong>Логи процесса</strong></summary>
+            <div class="logs" id="logs"></div>
+        </details>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let isGenerating = false;
+        
+        const form = document.getElementById('queryForm');
+        const generateBtn = document.getElementById('generateBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+        const contentDiv = document.getElementById('content');
+        const logsDiv = document.getElementById('logs');
+        
+        function showStatus(message, type = 'info') {
+            statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+        
+        function addLog(message, type = 'status') {
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${type}`;
+            logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logsDiv.appendChild(logEntry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+        
+        function startGeneration() {
+            isGenerating = true;
+            generateBtn.disabled = true;
+            stopBtn.disabled = false;
+            resultDiv.style.display = 'block';
+            contentDiv.innerHTML = '';
+            logsDiv.innerHTML = '';
+        }
+        
+        function stopGeneration() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            isGenerating = false;
+            generateBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            // Убираем индикатор печати
+            const typing = contentDiv.querySelector('.typing');
+            if (typing) {
+                typing.remove();
+            }
+        }
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const apiUrl = document.getElementById('apiUrl').value;
+            const query = document.getElementById('query').value.trim();
+            
+            if (!query) {
+                showStatus('Пожалуйста, введите запрос', 'warning');
+                return;
+            }
+            
+            startGeneration();
+            showStatus('Подключаемся к серверу...', 'info');
+            addLog('Начинаем генерацию');
+            
+            try {
+                // Делаем POST запрос для инициализации потока
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: query })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                // Читаем поток данных
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                showStatus('Получаем данные...', 'info');
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                handleSSEMessage(data);
+                            } catch (e) {
+                                console.error('Ошибка парсинга JSON:', e, line);
+                            }
+                        }
+                    }
+                    
+                    if (!isGenerating) break;
+                }
+                
+            } catch (error) {
+                console.error('Ошибка:', error);
+                showStatus(`Ошибка: ${error.message}`, 'error');
+                addLog(`Ошибка: ${error.message}`, 'error');
+            } finally {
+                stopGeneration();
+            }
+        });
+        
+        function handleSSEMessage(data) {
+            const { type, message, text, final } = data;
+            
+            switch (type) {
+                case 'status':
+                    showStatus(message, 'info');
+                    addLog(message, 'status');
+                    break;
+                    
+                case 'context':
+                    addLog(message, 'status');
+                    break;
+                    
+                case 'queries':
+                    showStatus(message, 'info');
+                    addLog(message, 'search');
+                    break;
+                    
+                case 'search':
+                    addLog(message, 'search');
+                    break;
+                    
+                case 'search_result':
+                    addLog(message, 'search');
+                    break;
+                    
+                case 'processing':
+                    showStatus(message, 'info');
+                    addLog(message, 'status');
+                    break;
+                    
+                case 'generation':
+                    showStatus(message, 'info');
+                    addLog(message, 'generation');
+                    // Добавляем индикатор печати
+                    contentDiv.innerHTML += '<span class="typing">✏️</span>';
+                    break;
+                    
+                case 'content':
+                    // Убираем предыдущий индикатор печати
+                    const typing = contentDiv.querySelector('.typing');
+                    if (typing) {
+                        typing.remove();
+                    }
+                    
+                    if (text) {
+                        contentDiv.innerHTML += text;
+                    }
+                    
+                    if (!final) {
+                        // Добавляем новый индикатор печати
+                        contentDiv.innerHTML += '<span class="typing">✏️</span>';
+                    } else {
+                        showStatus('Генерация завершена!', 'success');
+                        addLog('Генерация завершена', 'generation');
+                        stopGeneration();
+                    }
+                    break;
+                    
+                case 'warning':
+                    addLog(message, 'warning');
+                    break;
+                    
+                case 'error':
+                    showStatus(message, 'error');
+                    addLog(message, 'error');
+                    stopGeneration();
+                    break;
+                    
+                case 'complete':
+                    showStatus('Генерация завершена!', 'success');
+                    addLog(message, 'generation');
+                    stopGeneration();
+                    break;
+                    
+                case 'cache':
+                    showStatus(message, 'success');
+                    addLog(message, 'status');
+                    break;
+                    
+                default:
+                    console.log('Неизвестный тип сообщения:', data);
+            }
+        }
+        
+        stopBtn.addEventListener('click', () => {
+            stopGeneration();
+            showStatus('Генерация остановлена пользователем', 'warning');
+            addLog('Генерация остановлена пользователем', 'warning');
+        });
+        
+        // Пример запросов
+        const examples = [
+            "Расскажи про новые технологии ИИ в 2024 году",
+            "Что происходит с курсом доллара сегодня?", 
+            "Погода в Москве на завтра",
+            "Лучшие новости технологий за эту неделю",
+            "Как изменились цены на недвижимость в России?"
+        ];
+        
+        // Добавляем случайный пример при загрузке
+        document.getElementById('query').placeholder = examples[Math.floor(Math.random() * examples.length)];
+    </script>
+</body>
+</html>

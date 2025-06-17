@@ -8,6 +8,8 @@ metadata:
     component: llm-backend
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # Гарантирует, что старый под удаляется перед созданием нового
   selector:
     matchLabels:
       app: ollama
@@ -31,6 +33,13 @@ spec:
           value: "all"
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: "compute,utility"
+        # Настройки для оптимизации памяти
+        - name: OLLAMA_NUM_PARALLEL
+          value: "1"
+        - name: OLLAMA_MAX_LOADED_MODELS
+          value: "2"
+        - name: OLLAMA_FLASH_ATTENTION
+          value: "1"
         resources:
           requests:
             memory: "4Gi"
@@ -71,13 +80,13 @@ spec:
       volumes:
       - name: ollama-models
         persistentVolumeClaim:
-          claimName: ollama-models-pvc
-      nodeSelector:
-        accelerator: nvidia-tesla-gpu
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
+          claimName: ollama-models-pvc      # Для minikube не используем nodeSelector и tolerations
+      # nodeSelector:
+      #   accelerator: nvidia-tesla-gpu
+      # tolerations:
+      # - key: nvidia.com/gpu
+      #   operator: Exists
+      #   effect: NoSchedule
 ---
 apiVersion: v1
 kind: Service
