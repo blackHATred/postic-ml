@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: postic-ml
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+spec:
+  template:
+    spec:
+      runtimeClassName: nvidia
+      containers:
+      - name: ollama
+        image: ollama/ollama:0.6.8
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "8Gi"
+            cpu: "2"
+            nvidia.com/gpu: 1
+        env:
+        - name: OLLAMA_FLASH_ATTENTION
+          value: "1"
+        # Включаем GPU
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: "all"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: "compute,utility"
+        # Оптимизация для GPU
+        - name: OLLAMA_NUM_PARALLEL
+          value: "1"
+        - name: OLLAMA_MAX_LOADED_MODELS
+          value: "2"
+        # Принудительно используем GPU
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        - name: OLLAMA_LLM_LIBRARY
+          value: "cuda"
+      nodeSelector:
+        gpu: "nvidia-gtx1080"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule

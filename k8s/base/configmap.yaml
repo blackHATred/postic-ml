@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postic-ml-config
+  namespace: postic-ml
+data:
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  OLLAMA_HOST: "http://ollama-service:11434"
+  OLLAMA_MODEL: "gemma3:4b"
+  OLLAMA_EMBEDDING_MODEL: "bge-m3:567m"
+  OLLAMA_EMBEDDING_MODEL_DIM: "1024"
+  OLLAMA_TIMEOUT: "60"
+  NUM_CTX: "8192"
+  QDRANT_HOST: "qdrant-service"
+  QDRANT_PORT: "6333"
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REFERENCE_COUNT: "3"
+  DEFAULT_TIMEOUT: "5"

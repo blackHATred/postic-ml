@@ -1,1 +1,50 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secret files
 secret.txt
+*.env.local
+*.env.production
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Docker
+.dockerignore
+
+# Kubernetes
+*.yaml.bak
+*.yml.bak
+
+# Logs
+*.log
+logs/
+
+# Model files (if large)
+*.pth
+*.pkl
+*.joblib
+__pycache__/
+*.pyc
+
+kubeconfig

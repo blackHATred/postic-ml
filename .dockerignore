@@ -1,4 +1,54 @@
+# Git
+.git/
+.gitignore
+
+# Documentation  
 README.md
+*.md
+
+# Development files
 compose.yaml
 secret.txt
-.gitignore
+.env*
+example.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests
+test_*.py
+*_test.py
+
+# Kubernetes (не нужны в образе)
+k8s/
+deploy-*.bat
+cleanup-*.bat
+fast-deploy.bat
+prebuild-image.bat
+save-image.bat
+publish-image.bat
+setup-github-registry.bat
+*.tar
+
+# GitHub Actions
+.github/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+.tmp/
+temp/

@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postic-ml-app
+  namespace: postic-ml
+  labels:
+    app: postic-ml-app
+    component: api-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Гарантирует, что старый под удаляется перед созданием нового
+  selector:
+    matchLabels:
+      app: postic-ml-app
+  template:
+    metadata:
+      labels:
+        app: postic-ml-app
+    spec:
+      imagePullSecrets:
+      - name: ghcr-login-secret
+      containers:
+      - name: postic-ml-app
+        image: ghcr.io/blackhatred/postic-ml:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        envFrom:
+        - configMapRef:
+            name: postic-ml-config
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /docs
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /docs
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /docs
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 30
+      initContainers:
+      - name: wait-for-dependencies
+        image: busybox:1.35
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Redis..."
+          until nc -z redis-service 6379; do
+            echo "Redis not ready, waiting..."
+            sleep 2
+          done
+          echo "Waiting for Qdrant..."
+          until nc -z qdrant-service 6333; do
+            echo "Qdrant not ready, waiting..."
+            sleep 2
+          done
+          echo "Waiting for Ollama..."
+          until nc -z ollama-service 11434; do
+            echo "Ollama not ready, waiting..."
+            sleep 2
+          done
+          echo "All dependencies ready!"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postic-ml-service
+  namespace: postic-ml
+  labels:
+    app: postic-ml-app
+spec:
+  selector:
+    app: postic-ml-app
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: postic-ml-ingress
+  namespace: postic-ml
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+spec:
+  rules:
+  - host: postic-ml.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: postic-ml-service
+            port:
+              number: 8000
