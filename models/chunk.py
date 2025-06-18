@@ -32,6 +32,7 @@ class Chunk:
         """Разделяет текст по изображениям."""
         regex = r'!\[[^\]]*\]\((https?://[^\s)]+?\.(?:a?png|jpe?g|jfif|pjpeg|pjp|webp|gif|avif|bmp|tiff?|ico|cur))(?:\s+["\'][^"\']*["\'])?\)'
         matches = list(re.finditer(regex, self.s, re.IGNORECASE))
+        # print(f"[split_by_img] Всего найдено markdown-изображений: {len(matches)}")
         if not matches:
             return [self]
         
@@ -46,7 +47,10 @@ class Chunk:
         for i in range(len(matches) - 1):
             end = matches[i + 1].start()
             content = " " * (pref_repl_end - start) + self.s[pref_repl_end:end]
-            img_url = self.s[link_start:link_end]
+            md = self.s[link_start:link_end]
+            url_match = re.search(r'\((https?://[^\s)]+)\)', md)
+            img_url = url_match.group(1) if url_match else None
+            # print(f"[split_by_img] img_url найден: {img_url}")
             img_pos = link_start - start
             chunks.append(Chunk(content, img_url, img_pos, self.begin + start, self.begin + end))
             img_url = None
@@ -57,7 +61,10 @@ class Chunk:
             link_end = matches[i+1].end()
         
         content = self.s[start:]
-        img_url = self.s[link_start:link_end]
+        md = self.s[link_start:link_end]
+        url_match = re.search(r'\((https?://[^\s)]+)\)', md)
+        img_url = url_match.group(1) if url_match else None
+        # print(f"[split_by_img] img_url найден: {img_url}")
         img_pos = link_start - start
         chunks.append(Chunk(content, img_url, img_pos, self.begin + start, self.end))
         return chunks

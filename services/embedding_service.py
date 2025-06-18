@@ -6,11 +6,11 @@ from config.settings import (
 )
 
 
-async def get_vector(texts: List, images: List = None) -> List[float]:
-    """Получает векторное представление для текста."""
+async def get_vector(texts: List, images: List = None) -> List[List[float]]:
+    """Получает векторные представления для батча текстов."""
     response = await AsyncClient(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT).embed(
         model=OLLAMA_EMBEDDING_MODEL,
         input=texts,
         keep_alive=OLLAMA_KEEP_ALIVE,  # Добавляем keep_alive для удержания модели в памяти
     )
-    return response["embeddings"][0]
+    return response["embeddings"]

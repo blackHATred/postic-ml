@@ -22,23 +22,27 @@ async def ollama_chat_completion(messages, temperature=1.0, seed=None):
     return response['message']['content']
 
 
-async def ollama_chat_completion_stream(messages, temperature=1.0, seed=None):
-    """Выполняет потоковый запрос к Ollama для генерации ответа."""
+async def ollama_chat_completion_stream(messages, temperature=1.0, seed=None, chunk_size=128):
+    """Выполняет потоковый запрос к Ollama для генерации ответа, отдавая накопленные куски."""
     options = {"temperature": temperature, "num_ctx": NUM_CTX}
     if seed is not None:
         options["seed"] = seed
-    
     client = AsyncClient(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
-    
+    buffer = ""
     async for chunk in await client.chat(
         model=OLLAMA_MODEL,
         messages=messages,
         options=options,
         keep_alive=OLLAMA_KEEP_ALIVE,
-        stream=True,  # Включаем потоковый режим
+        stream=True,
     ):
         if 'message' in chunk and 'content' in chunk['message']:
-            yield chunk['message']['content']
+            buffer += chunk['message']['content']
+            if len(buffer) >= chunk_size:
+                yield buffer
+                buffer = ""
+    if buffer:
+        yield buffer
 
 
 async def preload_models():

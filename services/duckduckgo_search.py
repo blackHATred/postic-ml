@@ -9,6 +9,7 @@ from typing import Dict, List, Set
 from markdownify import markdownify as md
 from urllib.parse import urljoin, urlparse
 from duckduckgo_search import DDGS
+from duckduckgo_search.exceptions import RatelimitException
 from utils.timing import timer
 from config.settings import (
     SEARCH_TIME_RANGE, SEARCH_MULTIPLIER, SEARCH_REGION, 
@@ -136,24 +137,12 @@ class DuckDuckGoSearch:
 
         try:
             print(f"🔍 Выполняем поиск DuckDuckGo для: {query}")
-            
             with timer.measure("Поиск DuckDuckGo"):
                 # Выполняем поиск через DuckDuckGo
-                try:
-                    with DDGS() as ddgs:
-                        results = list(ddgs.text(
-                            query,
-                            region=SEARCH_REGION,
-                            safesearch=SEARCH_SAFESEARCH,
-                            timelimit=SEARCH_TIME_RANGE,
-                            max_results=self.ref_cnt * SEARCH_MULTIPLIER
-                        ))
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if any(keyword in error_msg for keyword in ['rate limit', 'too many requests', 'throttle']):
-                        print(f"🚫 Рейт-лимит от DuckDuckGo: {e}, ждем 0.5 секунды")
-                        await asyncio.sleep(0.5)
-                        # Повторная попытка
+                retry_count = 0
+                max_retries = 3
+                while retry_count < max_retries:
+                    try:
                         with DDGS() as ddgs:
                             results = list(ddgs.text(
                                 query,
@@ -162,8 +151,16 @@ class DuckDuckGoSearch:
                                 timelimit=SEARCH_TIME_RANGE,
                                 max_results=self.ref_cnt * SEARCH_MULTIPLIER
                             ))
-                    else:
+                        break  # если успех — выходим из цикла
+                    except RatelimitException as e:
+                        retry_count += 1
+                        print(f"🚫 RatelimitException от DuckDuckGo: {e}, попытка {retry_count}/{max_retries}, ждем 0.5 секунды")
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
                         raise e
+                else:
+                    print("❌ Превышено количество попыток после RatelimitException")
+                    return {}
             
             if not results:
                 print("❌ Результаты поиска не найдены")
@@ -198,19 +195,16 @@ class DuckDuckGoSearch:
                 links = links[:self.ref_cnt]
                 
             print(f"📊 Найдено {len(links)} ссылок для обработки")
-            
             with timer.measure("Загрузка страниц"):
-                # Получаем содержимое страниц с небольшими задержками
+                import asyncio
                 url_md_dict = {}
-                for i, url in enumerate(links):
-                    # Небольшая задержка между запросами
-                    if i > 0:
-                        await asyncio.sleep(0.2)
-                    
-                    md_content = await self.html_to_md(url)
-                    if isinstance(md_content, str) and len(md_content.strip()) > MIN_CONTENT_LENGTH:
-                        url_md_dict[url] = md_content
-                
+                semaphore = asyncio.Semaphore(4)  # максимум 4 одновременных запроса
+                async def fetch_and_store(url):
+                    async with semaphore:
+                        md_content = await self.html_to_md(url)
+                        if isinstance(md_content, str) and len(md_content.strip()) > MIN_CONTENT_LENGTH:
+                            url_md_dict[url] = md_content
+                await asyncio.gather(*(fetch_and_store(url) for url in links))
             print(f"✅ Успешно обработано {len(url_md_dict)} страниц")
             
             with timer.measure("Сохранение в кеш"):

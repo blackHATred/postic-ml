@@ -19,32 +19,49 @@ from utils.timing import timer
 
 
 async def index_one(hash_name, client, prev_last_id_chunk_count, url, chunks):
-    """Индексирует один документ."""
+    """Индексирует один документ с батчингом эмбеддинга."""
+    import time
     prev_last_id, chunk_count = prev_last_id_chunk_count
     if chunk_count > OVERALL_CHUNK_COUNT_LIM:
+        print(f"[index_one] Пропуск url (слишком много чанков): {url}")
         return
-    
     points = []
-    for chunk in chunks:
-        texts, images = chunk.if_img_for_emb_view()
-        images_ = None
-        vector = await get_vector(texts, images_)
-        payload = {
-            "source": url,
-            "text": chunk.s,
-            "begin": chunk.begin,
-            "end": chunk.end,
-        }
-        if images is not None:
-            payload["img_url"] = images[0]
-        
-        id = prev_last_id + chunk.i
-        points.append(PointStruct(id=id, vector=vector, payload=payload))
-
+    t0 = time.time()
+    batch_size = 4
+    chunk_batches = [chunks[i:i+batch_size] for i in range(0, len(chunks), batch_size)]
+    emb_idx = 0
+    for batch in chunk_batches:
+        t_emb_start = time.time()
+        texts_list = []
+        for chunk in batch:
+            texts, _ = chunk.if_img_for_emb_view()
+            if isinstance(texts, list):
+                texts_list.append(texts[0])
+            else:
+                texts_list.append(texts)
+        vectors = await get_vector(texts_list, None)
+        t_emb_end = time.time()
+        print(f"[index_one] {url} | Батч {emb_idx}: эмбеддинг {len(batch)} чанков занял {t_emb_end - t_emb_start:.3f} сек")
+        for i, chunk in enumerate(batch):
+            payload = {
+                "source": url,
+                "text": chunk.s,
+                "begin": chunk.begin,
+                "end": chunk.end,
+            }
+            if chunk.img is not None:
+                payload["img_url"] = chunk.img
+            id = prev_last_id + chunk.i
+            points.append(PointStruct(id=id, vector=vectors[i], payload=payload))
+        emb_idx += 1
+    t_upsert_start = time.time()
     client.upsert(
         collection_name=hash_name,
         points=points
     )
+    t_upsert_end = time.time()
+    print(f"[index_one] {url} | upsert {len(points)} точек занял {t_upsert_end - t_upsert_start:.3f} сек")
+    print(f"[index_one] {url} | всего обработка заняла {t_upsert_end - t0:.3f} сек")
 
 
 async def index(client: QdrantClient, searcher, query: str):
@@ -70,17 +87,21 @@ async def index(client: QdrantClient, searcher, query: str):
     
     try:
         url_md_dict = await searcher.search(query)
+        print(f"[index] Поиск завершён. Количество url: {len(url_md_dict)}")
         lens = dict()
         for url, md_content in url_md_dict.items():
-            url_md_dict[url] = to_chunks(md_content)
+            chunks = to_chunks(md_content)
+            # Ограничение на максимум 5 чанков на документ
+            if len(chunks) > 5:
+                chunks = chunks[:5]
+            url_md_dict[url] = chunks
             lens[url] = len(url_md_dict[url])
-        
+            print(f"[index] URL: {url} | Чанков: {lens[url]} | Длина текста: {len(md_content) if isinstance(md_content, str) else 'N/A'}")
         url_md_dict = dict(sorted(url_md_dict.items(), key=lambda item: len(item[1])))
         prev_last_id = 0
         prev_last_ids_dict = dict()
         chunk_count = 0
         chunk_count_pred = None
-        
         for url, chunks in url_md_dict.items():
             l = len(chunks)
             if chunk_count + l > OVERALL_CHUNK_COUNT_LIM and chunk_count_pred is None:
@@ -88,17 +109,18 @@ async def index(client: QdrantClient, searcher, query: str):
             chunk_count += l
             prev_last_ids_dict[url] = [prev_last_id, chunk_count]
             prev_last_id = chunks[-1].i + prev_last_id + 3
-        
+            print(f"[index] URL: {url} | prev_last_id: {prev_last_id} | chunk_count: {chunk_count}")
         await asyncio.gather(*(
             index_one(hash_name, client, prev_last_ids_dict[url], url, chunks) 
             for url, chunks in url_md_dict.items()
         ))
-        
+        print(f"[index] Индексация завершена. hash_name: {hash_name}, chunk_count: {chunk_count}")
         # Если chunk_count_pred остался None, используем общий chunk_count
         final_chunk_count = chunk_count_pred if chunk_count_pred is not None else chunk_count
         return hash_name, final_chunk_count
     except Exception as e:
-        print(f"Исключение во время индексации: {e}")
+        import traceback
+        print(f"Исключение во время индексации: {e}\n{traceback.format_exc()}")
         return None, None
 
 
@@ -136,16 +158,28 @@ def retrieve_neighbors(client: QdrantClient, collection_name: str, results: Any)
     return []
 
 
+DEBUG_LOGS = False  # Управляет подробным выводом логов в get_relevant_documents
+
 async def get_relevant_documents(client: QdrantClient, collection_name: str, query: str, search_k: int):
     """Получает релевантные документы по запросу."""
-    query_vector = await get_vector([query], None)
+    query_vector = (await get_vector([query], None))[0]  # Берём только первый вектор
     top_k_results = client.search(
         collection_name=collection_name,
         query_vector=query_vector,
         limit=search_k,
         with_payload=True,
     )
+    if DEBUG_LOGS:
+        print(f"[get_relevant_documents] Qdrant вернул {len(top_k_results)} результатов")
+        for idx, res in enumerate(top_k_results):
+            print(f"[get_relevant_documents] result[{idx}]: id={res.id}, payload={res.payload}")
     neighbors = retrieve_neighbors(client, collection_name, top_k_results)
+    if DEBUG_LOGS:
+        print(f"[get_relevant_documents] Соседей найдено: {len(neighbors)}")
     all_results = top_k_results + neighbors
     scores, texts, images = combine_results(all_results)
+    if DEBUG_LOGS:
+        print(f"[get_relevant_documents] combine_results вернул: scores={scores}, texts count={len(texts)}, images={images}")
+    if not texts and DEBUG_LOGS:
+        print(f"[get_relevant_documents] ВНИМАНИЕ: combine_results вернул пустой список текстов!")
     return scores, texts, images

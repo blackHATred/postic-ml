@@ -14,7 +14,7 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 
 # Настройки Ollama
-NUM_CTX = int(os.environ.get("NUM_CTX", 4096))
+NUM_CTX = int(os.environ.get("NUM_CTX", 8192))
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBEDDING_MODEL", "bge-m3:567m")
@@ -26,11 +26,11 @@ TEMP = 0.3
 
 # Настройки алгоритмов
 MAGIC_COEF = 1
-SEARCH_K_COEF = 0.65
-START_DIVIDE = 2048
+SEARCH_K_COEF = 1.5  # Было 0.65, увеличено для расширения выборки
+START_DIVIDE = 1536
 OVERALL_CHUNK_COUNT_LIM = 128
 DEFAULT_TIMEOUT = 5
-REFERENCE_COUNT = 10
+REFERENCE_COUNT = 3
 
 # Черный список доменов
 DOMAINS_BLACKLIST = {

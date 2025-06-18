@@ -2,13 +2,14 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 metadata:
-  name: postic-ml-registry
+  name: postic-ml-production
 
 resources:
   - ../../base
+  - nvidia-device-plugin.yaml
 
 patches:
-  - path: ollama-minikube-patch.yaml
+  - path: ollama-gpu-patch.yaml
     target:
       kind: Deployment
       name: ollama
@@ -16,10 +17,6 @@ patches:
     target:
       kind: Deployment
       name: postic-ml-app
-  - path: app-service-patch.yaml
-    target:
-      kind: Service
-      name: postic-ml-service
 
 configMapGenerator:
   - name: postic-ml-config
@@ -28,14 +25,13 @@ configMapGenerator:
       - OLLAMA_HOST=http://ollama-service.postic-ml.svc.cluster.local:11434
       - QDRANT_HOST=qdrant-service.postic-ml.svc.cluster.local
       - REDIS_HOST=redis-service.postic-ml.svc.cluster.local
-      - CUDA_VISIBLE_DEVICES=""
+      - CUDA_VISIBLE_DEVICES=0
       - FORCE_CPU=true
       - HOST=0.0.0.0
       - PORT=8000
 
 images:
-  - name: blackhatred/postic-ml
-    newName: ghcr.io/blackhatred/postic-ml
-    newTag: k8s-latest
+  - name: ghcr.io/blackhatred/postic-ml
+    newTag: latest
 
 namespace: postic-ml

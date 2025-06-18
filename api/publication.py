@@ -8,7 +8,7 @@ from typing import AsyncGenerator
 
 from config.settings import (
     SEARCH_K_COEF, TEMP, ENABLE_TIME_CONTEXT, 
-    MAX_SEARCH_QUERIES
+    MAX_SEARCH_QUERIES, NUM_CTX
 )
 from services.search_service import index, get_relevant_documents
 from services.llm_service import ollama_chat_completion, ollama_chat_completion_stream
@@ -16,6 +16,7 @@ from services.intelligent_query_service import IntelligentQueryService
 from utils.text_processing import delete_all_links
 from utils.timing import timer
 from utils.context_utils import get_current_context, format_context_for_llm
+from utils.strip_markdown import strip_markdown_and_links
 from models.requests import PublicationRequest
 from models.responses import PublicationResponse
 
@@ -56,37 +57,37 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
 
             # Выполняем поиск по каждому запросу
             all_search_content = []
+            all_images = []  # Список для сбора изображений
             for i, search_query in enumerate(search_queries, 1):
                 print(f"🔍 Поиск {i}/{len(search_queries)}: {search_query}")
 
                 with timer.measure(f"Индексация и поиск {i}"):
                     hash_name, chunk_count = await index(client, searcher, search_query)
                     if hash_name is None:
-                        print(f"❌ Индексация запроса '{search_query}' неудачна")
                         continue
-
                     search_k = math.ceil((chunk_count or 5) * SEARCH_K_COEF)
-                    _, texts, images = await get_relevant_documents(client, hash_name, search_query, search_k)
-
+                    result = await get_relevant_documents(client, hash_name, search_query, search_k)
+                    if not result or len(result) != 3:
+                        raise HTTPException(status_code=400, detail=f"get_relevant_documents failed for '{search_query}'")
+                    _, texts, images = result
                     # Очистка временной коллекции
-                    if not client.delete_collection(hash_name):
-                        print(f"⚠️ Не удалось удалить временную коллекцию {hash_name}")
-
-                    # Сохраняем найденные материалы
+                    client.delete_collection(hash_name)
+                    # Сохраняем только 2 самых релевантных чанка
                     if texts and len(texts) > 0:
-                        # Аннотируем контент источником
                         annotated_content = f"[Поиск: '{search_query}']\n" + "\n\n".join(texts[:2])
                         all_search_content.append(annotated_content)
-                        print(f"✅ Найдено для '{search_query}': {len(texts)} текстов")
-                    else:
-                        print(f"❌ Нет результатов для '{search_query}'")
-
+                        for img_dict in images[:2]:
+                            if isinstance(img_dict, dict):
+                                all_images.extend(list(img_dict.values()))
             if not all_search_content:
                 raise Exception("Не удалось найти релевантную информацию по запросу")
 
             # Объединяем весь найденный контент
             combined_content = delete_all_links("\n\n".join(all_search_content))
             print(f"📊 Обработано материалов: {len(all_search_content)} блоков")
+
+            # Убираем дубли изображений
+            all_images = list({img for img in all_images if img})
 
             with timer.measure("Генерация финального ответа через LLM"):
                 # Создаем итоговый промпт для LLM
@@ -104,6 +105,7 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
 - Учитывай текущую дату и время при формулировке
 - Если запрашивают эмодзи — используй их умеренно
 - Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок
+- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе
 - Используй информацию из разных источников для полноты
 - Делай пост информативным и интересным для чтения"""
 
@@ -114,6 +116,13 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
 
 Создай пост, который точно отвечает на запрос пользователя, используя найденную информацию."""
 
+                # Ограничение длины user_content, чтобы system_content всегда попадал в контекст
+                max_ctx = NUM_CTX
+                # Резервируем 1024 символа под system_content и служебные токены
+                max_user_content = max_ctx - min(len(system_content), 1024)
+                if len(user_content) > max_user_content:
+                    user_content = user_content[:max_user_content]
+
                 messages = [
                     {"role": "system", "content": system_content},
                     {"role": "user", "content": user_content},
@@ -121,13 +130,13 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
 
                 # Генерируем финальный ответ
                 response = await ollama_chat_completion(messages, temperature=TEMP, seed=420)
-                
+                # Постпроцессинг: удаляем markdown и ссылки
+                response = strip_markdown_and_links(response)
             print(f"📝 Результат сгенерирован ({len(response)} символов)")
-            
             with timer.measure("Сохранение в кеш"):
                 json_content = {
                     "text": response, 
-                    "images": None,  # Пока без изображений для упрощения
+                    "images": all_images,
                     "search_queries_used": search_queries,
                     "sources_count": len(all_search_content),
                     "generated_at": time_context['current_datetime'] if time_context else None
@@ -179,7 +188,7 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 
         yield f"data: {json.dumps({'type': 'status', 'message': 'Генерируем умные поисковые запросы через LLM...'})}\n\n"
         
-        # Инициализируем новый умный сервис
+        # Инициализируем умный сервис
         query_service = IntelligentQueryService()
         
         # Генерируем умные поисковые запросы через LLM
@@ -188,6 +197,7 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 
         # Выполняем поиск по каждому запросу
         all_search_content = []
+        all_images = []  # Список для сбора изображений
         for i, search_query in enumerate(search_queries, 1):
             yield f"data: {json.dumps({'type': 'search', 'message': f'Поиск {i}/{len(search_queries)}: {search_query}'})}\n\n"
             
@@ -198,7 +208,11 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
                 continue
 
             search_k = math.ceil((chunk_count or 5) * SEARCH_K_COEF)
-            _, texts, images = await get_relevant_documents(client, hash_name, search_query, search_k)
+            result = await get_relevant_documents(client, hash_name, search_query, search_k)
+            if not result or len(result) != 3:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'get_relevant_documents вернул None или некорректный результат для: {search_query}'})}\n\n"
+                continue
+            _, texts, images = result
 
             # Очистка временной коллекции
             if not client.delete_collection(hash_name):
@@ -212,6 +226,12 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
             else:
                 yield f"data: {json.dumps({'type': 'warning', 'message': f'Нет результатов для: {search_query}'})}\n\n"
 
+            # Собираем изображения из результатов поиска
+            if images:
+                for img_dict in images:
+                    if isinstance(img_dict, dict):
+                        all_images.extend(list(img_dict.values()))
+
         if not all_search_content:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Не удалось найти релевантную информацию по запросу'})}\n\n"
             return
@@ -220,6 +240,9 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 
         # Объединяем весь найденный контент
         combined_content = delete_all_links("\n\n".join(all_search_content))
+
+        # Убираем дубли изображений
+        all_images = list({img for img in all_images if img})
 
         # Формируем промпт для финальной генерации
         context_info = ""
@@ -236,6 +259,7 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 - Учитывай текущую дату и время при формулировке
 - Если запрашивают эмодзи — используй их умеренно
 - Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок
+- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе
 - Используй информацию из разных источников для полноты
 - Делай пост информативным и интересным для чтения"""
 
@@ -246,6 +270,12 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 
 Создай пост, который точно отвечает на запрос пользователя, используя найденную информацию."""
 
+        # Ограничение длины user_content, чтобы system_content всегда попадал в контекст
+        max_ctx = NUM_CTX
+        max_user_content = max_ctx - min(len(system_content), 1024)
+        if len(user_content) > max_user_content:
+            user_content = user_content[:max_user_content]
+
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
@@ -255,19 +285,23 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
 
         # Потоковая генерация ответа
         full_response = ""
-        async for chunk in ollama_chat_completion_stream(messages, temperature=TEMP, seed=420):
+        async for chunk in ollama_chat_completion_stream(messages, temperature=TEMP, seed=420, chunk_size=64):
             if chunk:
                 full_response += chunk
-                # Отправляем каждый кусочек текста
+                # Отправляем каждый накопленный кусок текста
                 yield f"data: {json.dumps({'type': 'content', 'text': chunk, 'final': False})}\n\n"
 
+        # Постпроцессинг: удаляем markdown и ссылки
+        full_response = strip_markdown_and_links(full_response)
+
+        # Используем уже собранный all_images (до генерации)
         # Финальное сообщение
-        yield f"data: {json.dumps({'type': 'content', 'text': '', 'final': True, 'full_text': full_response})}\n\n"
+        yield f"data: {json.dumps({'type': 'content', 'text': '', 'final': True, 'full_text': full_response, 'images': all_images})}\n\n"
 
         # Сохраняем в кеш
         json_content = {
             "text": full_response, 
-            "images": None,
+            "images": all_images,
             "search_queries_used": search_queries,
             "sources_count": len(all_search_content),
             "generated_at": time_context['current_datetime'] if time_context else None

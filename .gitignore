@@ -46,3 +46,5 @@ logs/
 *.joblib
 __pycache__/
 *.pyc
+
+kubeconfig

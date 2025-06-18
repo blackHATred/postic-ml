@@ -3,35 +3,27 @@ kind: Deployment
 metadata:
   name: ollama
   namespace: postic-ml
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
 spec:
   template:
     spec:
-      # Требуем узел с GPU
-      nodeSelector:
-        accelerator: nvidia-tesla-gpu
-      # Добавляем tolerations для GPU
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
+      runtimeClassName: nvidia
       containers:
       - name: ollama
+        image: ollama/ollama:0.6.8
         resources:
           requests:
             memory: "4Gi"
             cpu: "1"
-            # Требуем GPU для работы
             nvidia.com/gpu: 1
           limits:
-            memory: "8Gi" 
+            memory: "8Gi"
             cpu: "2"
             nvidia.com/gpu: 1
-        # Переменные окружения для GPU режима
         env:
-        - name: OLLAMA_HOST
-          value: "0.0.0.0"
-        - name: OLLAMA_PORT
-          value: "11434"
+        - name: OLLAMA_FLASH_ATTENTION
+          value: "1"
         # Включаем GPU
         - name: NVIDIA_VISIBLE_DEVICES
           value: "all"
@@ -39,7 +31,7 @@ spec:
           value: "compute,utility"
         # Оптимизация для GPU
         - name: OLLAMA_NUM_PARALLEL
-          value: "4"
+          value: "1"
         - name: OLLAMA_MAX_LOADED_MODELS
           value: "2"
         # Принудительно используем GPU
@@ -47,3 +39,9 @@ spec:
           value: "0"
         - name: OLLAMA_LLM_LIBRARY
           value: "cuda"
+      nodeSelector:
+        gpu: "nvidia-gtx1080"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
