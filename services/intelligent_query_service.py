@@ -38,7 +38,7 @@ class IntelligentQueryService:
 ПРАВИЛА СОЗДАНИЯ ПОИСКОВЫХ ЗАПРОСОВ:
 1. Анализируй намерения пользователя и извлекай ключевые темы
 2. Создавай запросы разной специфичности (общие и конкретные)
-3. ОБЯЗАТЕЛЬНО учитывай текущую дату для актуальности
+3. Учитывай текущую дату для актуальности, если это уместно
 4. Используй синонимы и альтернативные формулировки
 5. Для новостных тем добавляй временные маркеры (2025, сегодня, последние)
 6. Делай запросы краткими но информативными (3-7 слов)
@@ -77,6 +77,60 @@ class IntelligentQueryService:
                 
         # Fallback: создаем простые запросы на основе ключевых слов
         print("🔄 Используем fallback метод генерации запросов")
+        return self._generate_fallback_queries(user_query, max_queries)
+    
+    async def generate_image_queries(self, user_query: str, max_queries: int = 3) -> List[str]:
+        """
+        Генерирует поисковые запросы для поиска релевантных изображений через LLM.
+        """
+        context = get_current_context()
+        context_info = ""
+        if context:
+            context_info = f"""
+ТЕКУЩИЙ КОНТЕКСТ:
+- Дата: {context['current_datetime']}
+- День недели: {context['day_of_week']}
+- Сезон: {context['season']}
+- Месяц: {context['current_month_name']}
+- Год: {context['current_year']}
+"""
+
+        system_prompt = f"""Ты — эксперт по поисковым запросам для поиска изображений. Твоя задача — создать {max_queries} оптимальных поисковых запроса для поиска релевантных картинок в интернете по теме пользователя.
+
+{context_info}
+
+ПРАВИЛА СОЗДАНИЯ ЗАПРОСОВ:
+1. Анализируй намерения пользователя и тему
+2. Формируй запросы так, чтобы найти подходящие иллюстрации, фотографии, инфографику, эмодзи, мемы, если это уместно
+3. Добавляй слова: фото, картинка, иллюстрация, инфографика, эмодзи, мем, если это подходит
+4. Для новостных тем добавляй временные маркеры (2025, сегодня, последние)
+5. Делай запросы краткими и информативными (3-7 слов)
+6. НЕ дублируй запросы, каждый должен быть уникальным
+
+ФОРМАТ ОТВЕТА:
+Отвечай ТОЛЬКО списком JSON с полями "queries". Никакого дополнительного текста!
+
+Пример:
+{{"queries": ["фото доллар США 2025", "инфографика экономика", "эмодзи деньги"]}}"""
+
+        user_prompt = f'Создай поисковые запросы для поиска картинок по теме: "{user_query}"'
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await ollama_chat_completion([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ], temperature=0.7)
+                queries = self._parse_llm_response(response)
+                if queries and len(queries) > 0:
+                    valid_queries = self._validate_queries(queries, user_query)
+                    if valid_queries:
+                        print(f"✅ Сгенерировано {len(valid_queries)} image-запросов: {valid_queries}")
+                        return valid_queries[:max_queries]
+                print(f"⚠️ Попытка {attempt + 1}: LLM вернул некорректные image-запросы")
+            except Exception as e:
+                print(f"⚠️ Ошибка в попытке {attempt + 1} (image queries): {e}")
+        print("🔄 Используем fallback метод генерации image-запросов")
         return self._generate_fallback_queries(user_query, max_queries)
     
     def _parse_llm_response(self, response: str) -> List[str]:

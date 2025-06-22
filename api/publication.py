@@ -21,6 +21,15 @@ from models.requests import PublicationRequest
 from models.responses import PublicationResponse
 
 
+def is_bad_image_url(url: str) -> bool:
+    bad_patterns = [
+        "logo", "icon", "banner", "ad", "promo", "sprite", "favicon",
+        "default", "placeholder", "blank", "share", "social", "og_image"
+    ]
+    url_lower = url.lower()
+    return any(pat in url_lower for pat in bad_patterns)
+
+
 async def get_publication(request: PublicationRequest, client, redis_client, searcher) -> PublicationResponse:
     """Генерирует пост используя умный поиск через LLM."""
     try:
@@ -55,39 +64,51 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
                 search_queries = await query_service.generate_search_queries(query, MAX_SEARCH_QUERIES)
                 print(f"🎯 LLM сгенерировал поисковые запросы: {search_queries}")
 
-            # Выполняем поиск по каждому запросу
+            # Выполняем поиск по каждому запросу (только текст, без картинок)
             all_search_content = []
-            all_images = []  # Список для сбора изображений
             for i, search_query in enumerate(search_queries, 1):
                 print(f"🔍 Поиск {i}/{len(search_queries)}: {search_query}")
-
                 with timer.measure(f"Индексация и поиск {i}"):
                     hash_name, chunk_count = await index(client, searcher, search_query)
-                    if hash_name is None:
+                    chunk_count = int(chunk_count or 0)
+                    if isinstance(hash_name, dict) and hash_name.get("llm_fallback"):
+                        print(f"[index] Fallback на LLM для '{search_query}'")
+                        continue
+                    if not hash_name:
                         continue
                     search_k = math.ceil((chunk_count or 5) * SEARCH_K_COEF)
                     result = await get_relevant_documents(client, hash_name, search_query, search_k)
                     if not result or len(result) != 3:
                         raise HTTPException(status_code=400, detail=f"get_relevant_documents failed for '{search_query}'")
-                    _, texts, images = result
-                    # Очистка временной коллекции
+                    _, texts, _ = result  # images больше не используются
                     client.delete_collection(hash_name)
-                    # Сохраняем только 2 самых релевантных чанка
                     if texts and len(texts) > 0:
                         annotated_content = f"[Поиск: '{search_query}']\n" + "\n\n".join(texts[:2])
                         all_search_content.append(annotated_content)
-                        for img_dict in images[:2]:
-                            if isinstance(img_dict, dict):
-                                all_images.extend(list(img_dict.values()))
-            if not all_search_content:
-                raise Exception("Не удалось найти релевантную информацию по запросу")
 
-            # Объединяем весь найденный контент
-            combined_content = delete_all_links("\n\n".join(all_search_content))
-            print(f"📊 Обработано материалов: {len(all_search_content)} блоков")
+            # Генерируем отдельные image queries через LLM
+            with timer.measure("Генерация image-запросов через LLM"):
+                image_queries = await query_service.generate_image_queries(query, 3)
+                print(f"🖼️ LLM сгенерировал image-запросы: {image_queries}")
 
-            # Убираем дубли изображений
+            # Выполняем отдельный поиск по картинкам через SearxSearch
+            all_images = []
+            for img_query in image_queries:
+                print(f"🖼️ Поиск картинки: {img_query}")
+                img_results = await searcher.searx.search(img_query, num_results=5)
+                for res in img_results:
+                    img_url = res.get("img_src") or res.get("image") or res.get("thumbnail") or res.get("url")
+                    if img_url and not is_bad_image_url(img_url):
+                        all_images.append(img_url)
             all_images = list({img for img in all_images if img})
+
+            if not all_search_content:
+                print("[index] Нет релевантной информации, но LLM всё равно сгенерирует ответ!")
+                combined_content = ""
+            else:
+                # Объединяем весь найденный контент
+                combined_content = delete_all_links("\n\n".join(all_search_content))
+            print(f"📊 Обработано материалов: {len(all_search_content)} блоков")
 
             with timer.measure("Генерация финального ответа через LLM"):
                 # Создаем итоговый промпт для LLM
@@ -95,37 +116,53 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
                 if time_context and ENABLE_TIME_CONTEXT:
                     context_info = format_context_for_llm(time_context) + "\n\n"
 
-                system_content = f"""{context_info}Ты — профессиональный копирайтер и контент-мейкер.
+                # Дополнительные инструкции для LLM после предоставления информации
+                extra_instructions = ("ВАЖНО:\n"
+                    "- Не добавляй никаких ссылок, markdown, списков, заголовков, дополнительных ресурсов, фотографий, рекомендаций сайтов.\n"
+                    "- Пиши только текст поста, как будто ты человек, без формальностей и шаблонов.\n"
+                    "- НИКОГДА не начинай ответ с фраз типа 'Окей, вот пост', 'Вот пост', 'Держи пост', 'Готово' или любых других вступлений.\n"
+                    "- Сразу начинай с содержания поста.\n"
+                    "- При запросе подробной информации, рецептов, инструкций — предоставляй РАЗВЕРНУТЫЙ и ДЕТАЛЬНЫЙ ответ.\n"
+                    "- Если ты добавишь ссылки, markdown или дополнительные ресурсы — это будет ошибкой.\n"
+                    "- ЕЩЁ РАЗ: никаких ссылок, markdown, списков, заголовков, дополнительных ресурсов!\n"
+                )
 
-Твоя задача — создать качественный пост на основе найденной информации, точно выполняя запрос пользователя.
+                system_content = (
+                    f"{context_info}Ты — профессиональный копирайтер и контент-мейкер.\n\n"
+                    "Твоя задача — создать качественный пост на основе найденной информации, точно выполняя запрос пользователя.\n\n"
+                    "ПРАВИЛА:\n"
+                    "- Всегда ставь пожелания пользователя на первое место. Если пользователь просит что-то особенное (эмодзи, стиль, длина, формат) — обязательно выполни это.\n"
+                    "- Если пользователь просит короткий пост — делай его максимально кратким, не более 2-3 предложений.\n"
+                    "- Если пользователь просит эмодзи, обязательно используй их. Если считаешь, что эмодзи уместны — добавь их.\n"
+                    "- Не добавляй заголовки, списки, ссылки, markdown, дополнительные ресурсы, фотографии, рекомендации сайтов.\n"
+                    "- Не добавляй вступления, пояснения, не повторяй запрос пользователя.\n"
+                    "- Используй контекст по дате и времени ТОЛЬКО для поиска и выбора наиболее актуальной информации, но НЕ для явного упоминания даты/времени в тексте поста, если это не требуется пользователем.\n"
+                    "- Если запрашивают эмодзи — используй их умеренно.\n"
+                    "- Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок.\n"
+                    "- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе.\n"
+                    "- Используй информацию из разных источников для полноты.\n"
+                    "- Делай пост информативным и интересным для чтения.\n"
+                    "- При запросе рецептов, инструкций, руководств — предоставляй ПОЛНУЮ информацию со всеми деталями.\n"
+                    "- НИКОГДА не начинай ответ с фраз типа 'Окей, вот пост', 'Вот пост', 'Держи пост', 'Готово', или любых других вступлений.\n"
+                    "- Сразу начинай с содержания поста, без предисловий и объяснений.\n"
+                    "- Если пользователь просит подробную информацию, рецепт, инструкцию или пошаговое руководство — создавай РАЗВЕРНУТЫЙ и ДЕТАЛЬНЫЙ пост с полной информацией.\n"
+                    f"{extra_instructions}"                )
 
-ПРАВИЛА:
-- Анализируй найденную информацию и создавай на её основе оригинальный контент
-- Адаптируй стиль под запрос (новости, мнение, обзор, и т.д.)
-- Учитывай текущую дату и время при формулировке
-- Если запрашивают эмодзи — используй их умеренно
-- Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок
-- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе
-- Используй информацию из разных источников для полноты
-- Делай пост информативным и интересным для чтения"""
+                # Создаем структуру сообщений: система → контекст → система → задача
+                context_message = f"НАЙДЕННАЯ ИНФОРМАЦИЯ:\n{combined_content}" if combined_content else "Дополнительная информация не найдена, используй общие знания."
+                
+                task_message = (
+                    f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {query}\n\n"
+                    f"{extra_instructions}"
+                    "Создай пост, который точно отвечает на запрос пользователя, используя предоставленную выше информацию."
+                )
 
-                user_content = f"""НАЙДЕННАЯ ИНФОРМАЦИЯ:
-{combined_content}
-
-ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {query}
-
-Создай пост, который точно отвечает на запрос пользователя, используя найденную информацию."""
-
-                # Ограничение длины user_content, чтобы system_content всегда попадал в контекст
-                max_ctx = NUM_CTX
-                # Резервируем 1024 символа под system_content и служебные токены
-                max_user_content = max_ctx - min(len(system_content), 1024)
-                if len(user_content) > max_user_content:
-                    user_content = user_content[:max_user_content]
-
+                # Убираем ограничение длины - позволяем Ollama самой управлять контекстом
                 messages = [
                     {"role": "system", "content": system_content},
-                    {"role": "user", "content": user_content},
+                    {"role": "user", "content": context_message},
+                    {"role": "system", "content": system_content},  # Дублируем для усиления инструкций
+                    {"role": "user", "content": task_message},
                 ]
 
                 # Генерируем финальный ответ
@@ -195,15 +232,19 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
         search_queries = await query_service.generate_search_queries(query, MAX_SEARCH_QUERIES)
         yield f"data: {json.dumps({'type': 'queries', 'message': f'LLM сгенерировал запросы: {search_queries}', 'queries': search_queries})}\n\n"
 
-        # Выполняем поиск по каждому запросу
+        # Выполняем поиск по каждому запросу (только текст, без картинок)
         all_search_content = []
-        all_images = []  # Список для сбора изображений
         for i, search_query in enumerate(search_queries, 1):
             yield f"data: {json.dumps({'type': 'search', 'message': f'Поиск {i}/{len(search_queries)}: {search_query}'})}\n\n"
             
             # Выполняем индексацию и поиск
             hash_name, chunk_count = await index(client, searcher, search_query)
-            if hash_name is None:
+            chunk_count = int(chunk_count or 0)
+            # Fallback на LLM, если не найдено
+            if isinstance(hash_name, dict) and hash_name.get("llm_fallback"):
+                yield f"data: {json.dumps({'type': 'warning', 'message': f'Нет релевантных результатов, fallback на LLM для: {search_query}'})}\n\n"
+                continue
+            if not hash_name:
                 yield f"data: {json.dumps({'type': 'warning', 'message': f'Не удалось проиндексировать: {search_query}'})}\n\n"
                 continue
 
@@ -212,7 +253,7 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
             if not result or len(result) != 3:
                 yield f"data: {json.dumps({'type': 'error', 'message': f'get_relevant_documents вернул None или некорректный результат для: {search_query}'})}\n\n"
                 continue
-            _, texts, images = result
+            _, texts, _ = result  # images больше не используются
 
             # Очистка временной коллекции
             if not client.delete_collection(hash_name):
@@ -226,59 +267,79 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
             else:
                 yield f"data: {json.dumps({'type': 'warning', 'message': f'Нет результатов для: {search_query}'})}\n\n"
 
-            # Собираем изображения из результатов поиска
-            if images:
-                for img_dict in images:
-                    if isinstance(img_dict, dict):
-                        all_images.extend(list(img_dict.values()))
-
         if not all_search_content:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Не удалось найти релевантную информацию по запросу'})}\n\n"
-            return
+            yield f"data: {json.dumps({'type': 'warning', 'message': 'Нет релевантной информации, но LLM всё равно сгенерирует ответ!'})}\n\n"
+            combined_content = ""
+        else:
+            yield f"data: {json.dumps({'type': 'processing', 'message': f'Обработано материалов: {len(all_search_content)} блоков'})}\n\n"
+            # Объединяем весь найденный контент
+            combined_content = delete_all_links("\n\n".join(all_search_content))
 
-        yield f"data: {json.dumps({'type': 'processing', 'message': f'Обработано материалов: {len(all_search_content)} блоков'})}\n\n"
+        # --- Новый этап: отдельная генерация image queries и поиск картинок ---
+        with timer.measure("Генерация image-запросов через LLM"):
+            image_queries = await query_service.generate_image_queries(query, 3)
+            yield f"data: {json.dumps({'type': 'image_queries', 'message': f'LLM сгенерировал image-запросы: {image_queries}', 'queries': image_queries})}\n\n"
 
-        # Объединяем весь найденный контент
-        combined_content = delete_all_links("\n\n".join(all_search_content))
-
-        # Убираем дубли изображений
+        all_images = []
+        for img_query in image_queries:
+            yield f"data: {json.dumps({'type': 'image_search', 'message': f'Поиск картинки: {img_query}'})}\n\n"
+            img_results = await searcher.searx.search(img_query, num_results=5)
+            for res in img_results:
+                img_url = res.get("img_src") or res.get("image") or res.get("thumbnail") or res.get("url")
+                if img_url and not is_bad_image_url(img_url):
+                    all_images.append(img_url)
         all_images = list({img for img in all_images if img})
 
         # Формируем промпт для финальной генерации
         context_info = ""
         if time_context and ENABLE_TIME_CONTEXT:
-            context_info = format_context_for_llm(time_context) + "\n\n"
+            context_info = format_context_for_llm(time_context) + "\n\n"        # Дополнительные инструкции для LLM после предоставления информации
+        extra_instructions = ("ВАЖНО:\n"
+            "- Не добавляй никаких ссылок, markdown, списков, заголовков, дополнительных ресурсов, фотографий, рекомендаций сайтов.\n"
+            "- Пиши только текст поста, как будто ты человек, без формальностей и шаблонов.\n"
+            "- НИКОГДА не начинай ответ с фраз типа 'Окей, вот пост', 'Вот пост', 'Держи пост', 'Готово' или любых других вступлений.\n"
+            "- Сразу начинай с содержания поста.\n"
+            "- При запросе подробной информации, рецептов, инструкций — предоставляй РАЗВЕРНУТЫЙ и ДЕТАЛЬНЫЙ ответ.\n"
+            "- Если ты добавишь ссылки, markdown или дополнительные ресурсы — это будет ошибкой.\n"
+            "- ЕЩЁ РАЗ: никаких ссылок, markdown, списков, заголовков, дополнительных ресурсов!\n"
+        )
 
-        system_content = f"""{context_info}Ты — профессиональный копирайтер и контент-мейкер.
+        system_content = (
+            f"{context_info}Ты — профессиональный копирайтер и контент-мейкер.\n\n"
+            "Твоя задача — создать качественный пост на основе найденной информации, точно выполняя запрос пользователя.\n\n"
+            "ПРАВИЛА:\n"
+            "- Всегда ставь пожелания пользователя на первое место. Если пользователь просит что-то особенное (эмодзи, стиль, длина, формат) — обязательно выполни это.\n"
+            "- Если пользователь просит короткий пост — делай его максимально кратким, не более 2-3 предложений.\n"
+            "- Если пользователь просит эмодзи, обязательно используй их. Если считаешь, что эмодзи уместны — добавь их.\n"
+            "- Не добавляй заголовки, списки, ссылки, markdown, дополнительные ресурсы, фотографии, рекомендации сайтов.\n"
+            "- Не добавляй вступления, пояснения, не повторяй запрос пользователя.\n"
+            "- Используй контекст по дате и времени ТОЛЬКО для поиска и выбора наиболее актуальной информации, но НЕ для явного упоминания даты/времени в тексте поста, если это не требуется пользователем.\n"
+            "- Если запрашивают эмодзи — используй их умеренно.\n"
+            "- Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок.\n"
+            "- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе.\n"
+            "- Используй информацию из разных источников для полноты.\n"
+            "- Делай пост информативным и интересным для чтения.\n"
+            "- При запросе рецептов, инструкций, руководств — предоставляй ПОЛНУЮ информацию со всеми деталями.\n"
+            "- НИКОГДА не начинай ответ с фраз типа 'Окей, вот пост', 'Вот пост', 'Держи пост', 'Готово', или любых других вступлений.\n"
+            "- Сразу начинай с содержания поста, без предисловий и объяснений.\n"
+            "- Если пользователь просит подробную информацию, рецепт, инструкцию или пошаговое руководство — создавай РАЗВЕРНУТЫЙ и ДЕТАЛЬНЫЙ пост с полной информацией.\n"
+            f"{extra_instructions}"        )
 
-Твоя задача — создать качественный пост на основе найденной информации, точно выполняя запрос пользователя.
+        # Создаем структуру сообщений: система → контекст → система → задача
+        context_message = f"НАЙДЕННАЯ ИНФОРМАЦИЯ:\n{combined_content}" if combined_content else "Дополнительная информация не найдена, используй общие знания."
+        
+        task_message = (
+            f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {query}\n\n"
+            f"{extra_instructions}"
+            "Создай пост, который точно отвечает на запрос пользователя, используя предоставленную выше информацию."
+        )
 
-ПРАВИЛА:
-- Анализируй найденную информацию и создавай на её основе оригинальный контент
-- Адаптируй стиль под запрос (новости, мнение, обзор, и т.д.)
-- Учитывай текущую дату и время при формулировке
-- Если запрашивают эмодзи — используй их умеренно
-- Пост должен быть БЕЗ markdown-разметки и БЕЗ ссылок
-- Если в исходном тексте есть markdown-разметка, обязательно убери её в ответе
-- Используй информацию из разных источников для полноты
-- Делай пост информативным и интересным для чтения"""
-
-        user_content = f"""НАЙДЕННАЯ ИНФОРМАЦИЯ:
-{combined_content}
-
-ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {query}
-
-Создай пост, который точно отвечает на запрос пользователя, используя найденную информацию."""
-
-        # Ограничение длины user_content, чтобы system_content всегда попадал в контекст
-        max_ctx = NUM_CTX
-        max_user_content = max_ctx - min(len(system_content), 1024)
-        if len(user_content) > max_user_content:
-            user_content = user_content[:max_user_content]
-
+        # Убираем ограничение длины - позволяем Ollama самой управлять контекстом
         messages = [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": context_message},
+            {"role": "system", "content": system_content},  # Дублируем для усиления инструкций
+            {"role": "user", "content": task_message},
         ]
 
         yield f"data: {json.dumps({'type': 'generation', 'message': 'Генерируем финальный ответ через LLM...', 'images': None})}\n\n"

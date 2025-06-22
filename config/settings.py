@@ -22,7 +22,7 @@ OLLAMA_EMBEDDING_MODEL_DIM = int(os.environ.get("OLLAMA_EMBEDDING_MODEL_DIM", 10
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", 60))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "604800s") # 7 дней в секундах
 OLLAMA_PRELOAD_MODELS = True  # Предзагружать модели при старте приложения
-TEMP = 0.3
+TEMP = 0.7
 
 # Настройки алгоритмов
 MAGIC_COEF = 1
