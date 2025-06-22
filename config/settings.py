@@ -22,7 +22,7 @@ OLLAMA_EMBEDDING_MODEL_DIM = int(os.environ.get("OLLAMA_EMBEDDING_MODEL_DIM", 10
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", 60))
 OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "604800s") # 7 дней в секундах
 OLLAMA_PRELOAD_MODELS = True  # Предзагружать модели при старте приложения
-TEMP = 0.7
+TEMP = 0.1  # Понижена с 0.7 до 0.1 для уменьшения галлюцинаций
 
 # Настройки алгоритмов
 MAGIC_COEF = 1
@@ -30,7 +30,7 @@ SEARCH_K_COEF = 1.5  # Было 0.65, увеличено для расширен
 START_DIVIDE = 1536
 OVERALL_CHUNK_COUNT_LIM = 128
 DEFAULT_TIMEOUT = 5
-REFERENCE_COUNT = 3
+REFERENCE_COUNT = 5
 
 # Черный список доменов
 DOMAINS_BLACKLIST = {
@@ -61,3 +61,8 @@ ENABLE_TIME_CONTEXT = True  # Включить контекст времени �
 SEARCH_RESULT_DEDUPLICATION = True  # Удалять дубликаты результатов поиска
 CONTEXT_RELEVANCE_THRESHOLD = 0.7  # Порог релевантности для объединения запросов
 TIMEZONE = "UTC+3 (Moscow Time)"  # Часовой пояс для контекста времени
+
+# Настройки поиска изображений
+MAX_IMAGES_PER_QUERY = 10  # Количество изображений на один запрос
+MAX_TOTAL_IMAGES = 30     # Максимальное общее количество изображений
+IMAGE_SEARCH_ENGINES = "bing images,google images,startpage"  # Движки для поиска изображений

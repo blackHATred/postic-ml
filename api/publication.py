@@ -22,12 +22,52 @@ from models.responses import PublicationResponse
 
 
 def is_bad_image_url(url: str) -> bool:
+    """Проверяет, является ли URL плохим изображением."""
+    if not url or not isinstance(url, str):
+        return True
+    
+    url_lower = url.lower()
+    
+    # Плохие паттерны в URL
     bad_patterns = [
         "logo", "icon", "banner", "ad", "promo", "sprite", "favicon",
-        "default", "placeholder", "blank", "share", "social", "og_image"
+        "default", "placeholder", "blank", "share", "social", "og_image",
+        "avatar", "profile", "thumb_", "button", "header", "footer"
     ]
+    
+    # Проверяем плохие паттерны
+    if any(pat in url_lower for pat in bad_patterns):
+        return True
+    
+    # Проверяем, что это действительно изображение
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+    has_image_extension = any(ext in url_lower for ext in image_extensions)
+    
+    # Если нет расширения изображения и нет признаков изображения в URL - плохой URL
+    image_indicators = ['images/', 'img/', 'media/', 'photo', 'picture', 'format=']
+    has_image_indicator = any(indicator in url_lower for indicator in image_indicators)
+    
+    if not has_image_extension and not has_image_indicator:
+        return True
+    
+    return False
+
+
+def is_direct_image_url(url: str) -> bool:
+    """Проверяет, является ли URL прямой ссылкой на изображение."""
+    if not url or not isinstance(url, str):
+        return False
+    
     url_lower = url.lower()
-    return any(pat in url_lower for pat in bad_patterns)
+    
+    # Прямые расширения изображений
+    direct_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+    
+    for ext in direct_extensions:
+        if url_lower.endswith(ext) or f"{ext}?" in url_lower:
+            return True
+    
+    return False
 
 
 async def get_publication(request: PublicationRequest, client, redis_client, searcher) -> PublicationResponse:
@@ -89,18 +129,24 @@ async def get_publication(request: PublicationRequest, client, redis_client, sea
             # Генерируем отдельные image queries через LLM
             with timer.measure("Генерация image-запросов через LLM"):
                 image_queries = await query_service.generate_image_queries(query, 3)
-                print(f"🖼️ LLM сгенерировал image-запросы: {image_queries}")
-
-            # Выполняем отдельный поиск по картинкам через SearxSearch
+                print(f"🖼️ LLM сгенерировал image-запросы: {image_queries}")            # Выполняем отдельный поиск по картинкам через SearX Images
+            from config.settings import MAX_IMAGES_PER_QUERY, MAX_TOTAL_IMAGES
+            
             all_images = []
             for img_query in image_queries:
                 print(f"🖼️ Поиск картинки: {img_query}")
-                img_results = await searcher.searx.search(img_query, num_results=5)
+                img_results = await searcher.searx.search_images(img_query, num_results=MAX_IMAGES_PER_QUERY)
                 for res in img_results:
-                    img_url = res.get("img_src") or res.get("image") or res.get("thumbnail") or res.get("url")
-                    if img_url and not is_bad_image_url(img_url):
+                    img_url = res.get("img_src") or res.get("url")
+                    if img_url and is_direct_image_url(img_url) and not is_bad_image_url(img_url):
                         all_images.append(img_url)
-            all_images = list({img for img in all_images if img})
+                        if len(all_images) >= MAX_TOTAL_IMAGES + 5:  # Небольшой запас для фильтрации
+                            break
+                if len(all_images) >= MAX_TOTAL_IMAGES + 5:
+                    break
+            
+            # Удаляем дубликаты и ограничиваем количество
+            all_images = list(dict.fromkeys(all_images))[:MAX_TOTAL_IMAGES]
 
             if not all_search_content:
                 print("[index] Нет релевантной информации, но LLM всё равно сгенерирует ответ!")
@@ -280,15 +326,23 @@ async def get_publication_stream(request: PublicationRequest, client, redis_clie
             image_queries = await query_service.generate_image_queries(query, 3)
             yield f"data: {json.dumps({'type': 'image_queries', 'message': f'LLM сгенерировал image-запросы: {image_queries}', 'queries': image_queries})}\n\n"
 
+        from config.settings import MAX_IMAGES_PER_QUERY, MAX_TOTAL_IMAGES
+        
         all_images = []
         for img_query in image_queries:
             yield f"data: {json.dumps({'type': 'image_search', 'message': f'Поиск картинки: {img_query}'})}\n\n"
-            img_results = await searcher.searx.search(img_query, num_results=5)
+            img_results = await searcher.searx.search_images(img_query, num_results=MAX_IMAGES_PER_QUERY)
             for res in img_results:
-                img_url = res.get("img_src") or res.get("image") or res.get("thumbnail") or res.get("url")
-                if img_url and not is_bad_image_url(img_url):
+                img_url = res.get("img_src") or res.get("url")
+                if img_url and is_direct_image_url(img_url) and not is_bad_image_url(img_url):
                     all_images.append(img_url)
-        all_images = list({img for img in all_images if img})
+                    if len(all_images) >= MAX_TOTAL_IMAGES + 5:  # Небольшой запас для фильтрации
+                        break
+            if len(all_images) >= MAX_TOTAL_IMAGES + 5:
+                break
+        
+        # Удаляем дубликаты и ограничиваем количество
+        all_images = list(dict.fromkeys(all_images))[:MAX_TOTAL_IMAGES]
 
         # Формируем промпт для финальной генерации
         context_info = ""
