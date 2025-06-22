@@ -8,13 +8,12 @@ from bs4 import BeautifulSoup
 from typing import Dict, List, Set
 from markdownify import markdownify as md
 from urllib.parse import urljoin, urlparse
-from duckduckgo_search import DDGS
-from duckduckgo_search.exceptions import RatelimitException
-from utils.timing import timer
+from services.searx_search import SearxSearch
 from config.settings import (
     SEARCH_TIME_RANGE, SEARCH_MULTIPLIER, SEARCH_REGION, 
     SEARCH_SAFESEARCH, TITLE_KEYWORD_BONUS, MIN_CONTENT_LENGTH
 )
+from utils.timing import timer
 
 
 def first_word_with_number(text):
@@ -47,20 +46,21 @@ def filter_links_by_blacklist(links: List[str], blacklist: Set[str]) -> List[str
     return filtered_links
 
 
-class DuckDuckGoSearch:
-    """Сервис для поиска через DuckDuckGo с простой обработкой рейт-лимитов."""
+class SearxWebSearch:
+    """Сервис для поиска через Searx/SearxNG с ротацией публичных инстансов."""
     
-    def __init__(self, redis_client: redis.Redis, ref_cnt: int, timeout: int, blacklist: Set[str]):
+    def __init__(self, redis_client: redis.Redis, ref_cnt: int, timeout: int, blacklist: Set[str], searx_instances=None):
         self.redis_client = redis_client
         self.ref_cnt = ref_cnt
         self.timeout = timeout
         self.blacklist = blacklist
+        self.searx = SearxSearch(instances=searx_instances, timeout=2)
         self.client = httpx.AsyncClient(
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         )
-        print("DuckDuckGoSearch initialized with ref_cnt:", ref_cnt, "timeout:", timeout)
+        print("SearxWebSearch initialized with ref_cnt:", ref_cnt, "timeout:", timeout)
 
     async def html_to_md(self, url: str) -> str:
         """Конвертирует HTML страницу в Markdown с простой обработкой ошибок."""
@@ -115,14 +115,15 @@ class DuckDuckGoSearch:
             return ""
 
     async def search(self, query: str) -> Dict[str, str]:
-        """Выполняет поиск по запросу и возвращает словарь URL -> содержимое в Markdown."""
+        """Выполняет поиск по запросу через Searx и возвращает словарь URL -> содержимое в Markdown.
+        Если ничего не найдено, возвращает {'llm_fallback': True} для генерации ответа LLM."""
         timer.reset()
         
         with timer.measure("Кеширование"):
             # Создаем хеш для кеширования
             md5_hash = hashlib.new('md5')
             md5_hash.update(query.encode())
-            cache_key = f"ddg_search_{md5_hash.hexdigest()}"
+            cache_key = f"searx_search_{md5_hash.hexdigest()}"
             
             # Проверяем кеш
             cached = self.redis_client.get(cache_key)
@@ -136,41 +137,19 @@ class DuckDuckGoSearch:
                     pass
 
         try:
-            print(f"🔍 Выполняем поиск DuckDuckGo для: {query}")
-            with timer.measure("Поиск DuckDuckGo"):
-                # Выполняем поиск через DuckDuckGo
-                retry_count = 0
-                max_retries = 3
-                while retry_count < max_retries:
-                    try:
-                        with DDGS() as ddgs:
-                            results = list(ddgs.text(
-                                query,
-                                region=SEARCH_REGION,
-                                safesearch=SEARCH_SAFESEARCH,
-                                timelimit=SEARCH_TIME_RANGE,
-                                max_results=self.ref_cnt * SEARCH_MULTIPLIER
-                            ))
-                        break  # если успех — выходим из цикла
-                    except RatelimitException as e:
-                        retry_count += 1
-                        print(f"🚫 RatelimitException от DuckDuckGo: {e}, попытка {retry_count}/{max_retries}, ждем 0.5 секунды")
-                        await asyncio.sleep(0.5)
-                    except Exception as e:
-                        raise e
-                else:
-                    print("❌ Превышено количество попыток после RatelimitException")
-                    return {}
+            print(f"🔍 Выполняем поиск Searx для: {query}")
+            with timer.measure("Поиск Searx"):
+                results = await self.searx.search(query, num_results=self.ref_cnt)
             
             if not results:
                 print("❌ Результаты поиска не найдены")
-                return {}
+                return {"llm_fallback": True}
             
             with timer.measure("Фильтрация результатов"):
                 # Извлекаем ссылки и сортируем по релевантности
                 links_with_scores = []
                 for i, result in enumerate(results):
-                    if 'href' in result:
+                    if 'url' in result:
                         # Простая оценка релевантности: позиция в поиске (меньше = лучше)
                         score = i
                         # Бонус за наличие ключевых слов в заголовке
@@ -180,7 +159,7 @@ class DuckDuckGoSearch:
                             title_bonus = sum(1 for word in query_words if word in title_lower)
                             score -= title_bonus * TITLE_KEYWORD_BONUS  # Снижаем оценку (лучше)
                         
-                        links_with_scores.append((result['href'], score))
+                        links_with_scores.append((result['url'], score))
                 
                 # Сортируем по оценке и берем лучшие
                 links_with_scores.sort(key=lambda x: x[1])
@@ -190,13 +169,11 @@ class DuckDuckGoSearch:
                 filtered_links = filter_links_by_blacklist(links, self.blacklist)
                 if filtered_links:
                     links = filtered_links
-                
                 # Ограничиваем количество ссылок
                 links = links[:self.ref_cnt]
                 
             print(f"📊 Найдено {len(links)} ссылок для обработки")
             with timer.measure("Загрузка страниц"):
-                import asyncio
                 url_md_dict = {}
                 semaphore = asyncio.Semaphore(4)  # максимум 4 одновременных запроса
                 async def fetch_and_store(url):
@@ -206,7 +183,6 @@ class DuckDuckGoSearch:
                             url_md_dict[url] = md_content
                 await asyncio.gather(*(fetch_and_store(url) for url in links))
             print(f"✅ Успешно обработано {len(url_md_dict)} страниц")
-            
             with timer.measure("Сохранение в кеш"):
                 # Кешируем результат на 1 час
                 if url_md_dict:
@@ -215,11 +191,14 @@ class DuckDuckGoSearch:
             # Выводим итоговую таблицу времени
             print("\n" + timer.get_summary_table())
             
+            if not url_md_dict:
+                print("❌ Не удалось получить содержимое ни одной страницы, fallback на LLM")
+                return {"llm_fallback": True}
             return url_md_dict
             
         except Exception as e:
             print(f"❌ Ошибка при поиске: {e}")
-            return {}
+            return {"llm_fallback": True}
 
     async def close(self):
         """Закрывает HTTP клиент."""

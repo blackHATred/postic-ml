@@ -13,7 +13,7 @@ from config.settings import (
     OLLAMA_PRELOAD_MODELS
 )
 from models.classifier import TwoLayerClassifier
-from services.duckduckgo_search import DuckDuckGoSearch
+from services.duckduckgo_search import SearxWebSearch
 
 
 async def preload_ollama_models():
@@ -42,8 +42,8 @@ def init_clients():
     except redis.ConnectionError as e:
         print("Подключение к redis - FAIL:", e)
         exit()
-      # DuckDuckGo поисковый клиент
-    searcher = DuckDuckGoSearch(
+    # Searx поисковый клиент
+    searcher = SearxWebSearch(
         redis_client, REFERENCE_COUNT, 
         DEFAULT_TIMEOUT, DOMAINS_BLACKLIST
     )

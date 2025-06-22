@@ -4,4 +4,8 @@ k8s-dashboard:
 	kubectl -n kubernetes-dashboard port-forward svc/kubernetes-dashboard-kong-proxy 8443:443
 
 push-app:
-	docker build -t "ghcr.io/blackhatred/postic-ml:latest" .; docker push "ghcr.io/blackhatred/postic-ml:latest"
+	@echo "Building Docker image..."
+	docker build -t ghcr.io/blackhatred/postic-ml:latest .
+	@echo "Pushing Docker image..."
+	docker push ghcr.io/blackhatred/postic-ml:latest
+	@echo "Docker image pushed successfully."

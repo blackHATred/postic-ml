@@ -102,7 +102,16 @@ async def answer_comment(request: AnswerCommentRequest) -> AnswerCommentResponse
         messages = [
             {
                 "role": "system",
-                "content": f"Вы SMM-агент. Вы кратко отвечаете на комментарий. Если комментарий является спамом (spam), скамом (scam), оскорбительным (offensive), Вы пишете:\n{STR_NO_ANSWER}\nЕсли комментарий необходимо направить в поддержку, Вы пишете:\n{STR_PASS}\nИначе необходимо ответить пользователю в {style} стиле."
+                "content": f"""Вы SMM-агент. Вы кратко отвечаете на комментарий. 
+                Если комментарий является спамом (spam), скамом (scam), оскорбительным (offensive), Вы пишете:\n{STR_NO_ANSWER}
+                Иначе необходимо ответить пользователю в {style} стиле.
+                Ответ должен быть кратким, желательно не более 2-3 предложений.
+                Если Вы не знаете, что ответить, то пишите:\n{STR_PASS}.
+                Если комментарий не содержит вопроса, то отвечайте вежливо, но кратко.
+                Если комментарий содержит вопрос, то отвечайте на него.
+                Ответ не должен содержать markdown-разметки, только текст.
+                Ответ не должен содержать ссылок на другие ресурсы или упоминания других пользователей.
+                Ответ должен быть написан как обычное сообщение, без ссылок на другие ресурсы или упоминания других пользователей."""
             }, {
                 "role": "user",
                 "content": f"Комментарий:\n{comment}"
@@ -111,30 +120,31 @@ async def answer_comment(request: AnswerCommentRequest) -> AnswerCommentResponse
         no_answer = 0
         support_needed = 0
         r = {"no_answer": False, "support_needed": False}
-
         responses = await asyncio.gather(*[
             ollama_chat_completion(messages, temperature=TEMP, seed=i)
             for i in range(3)
         ])
-        
+        print("Запрос:", messages)
         for i, response in enumerate(responses):
+            print(f"Ответ {i}:", response)
             if STR_PASS in response:
                 support_needed += 1
             if STR_NO_ANSWER in response:
                 no_answer += 1
-            r[f"answer_{i}"] = response
+            # Сохраняем ответ только если он не содержит служебных строк
+            if STR_PASS not in response and STR_NO_ANSWER not in response:
+                r[f"answer_{i}"] = response
         
-        if no_answer != 0:
+        if no_answer >= 2:  # Если большинство ответов - "SKIP"
             r["no_answer"] = True
+            # Удаляем ответы только если действительно нет ответа
             r.pop('answer_0', None)
             r.pop('answer_1', None)
             r.pop('answer_2', None)
         
-        if support_needed != 0:
+        if support_needed > 0:  # Если хотя бы один ответ предлагает поддержку
             r["support_needed"] = True
-            r.pop('answer_0', None)
-            r.pop('answer_1', None)
-            r.pop('answer_2', None)
+            # НЕ удаляем ответы - они могут быть полезны даже при необходимости поддержки
         
         return AnswerCommentResponse(**r)
     except Exception as e:

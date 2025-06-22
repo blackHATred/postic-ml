@@ -87,6 +87,10 @@ async def index(client: QdrantClient, searcher, query: str):
     
     try:
         url_md_dict = await searcher.search(query)
+        # Обработка случая, когда нужен fallback на LLM
+        if not url_md_dict or (isinstance(url_md_dict, dict) and url_md_dict.get("llm_fallback")):
+            print("[index] Поиск не дал результатов, fallback на LLM")
+            return {"llm_fallback": True}, 0
         print(f"[index] Поиск завершён. Количество url: {len(url_md_dict)}")
         lens = dict()
         for url, md_content in url_md_dict.items():
@@ -117,6 +121,8 @@ async def index(client: QdrantClient, searcher, query: str):
         print(f"[index] Индексация завершена. hash_name: {hash_name}, chunk_count: {chunk_count}")
         # Если chunk_count_pred остался None, используем общий chunk_count
         final_chunk_count = chunk_count_pred if chunk_count_pred is not None else chunk_count
+        if final_chunk_count is None:
+            final_chunk_count = 0
         return hash_name, final_chunk_count
     except Exception as e:
         import traceback
